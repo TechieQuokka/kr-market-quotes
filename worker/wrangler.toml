@@ -1,0 +1,12 @@
+name = "kr-market-quotes"
+main = "src/index.ts"
+compatibility_date = "2026-07-14"
+
+# 매시 정각(UTC). 수집 여부는 코드에서 KST 기준으로 판단한다.
+[triggers]
+crons = ["0 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kr-market-quotes"
+database_id = "bb9d60df-ee53-4eec-b24b-0b21e201eb8b"
