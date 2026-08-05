@@ -142,13 +142,25 @@ pub fn expected(symbol: &str, ts: i64) -> bool {
     }
 }
 
+/// 정각 직후 이 초까지는 아직 같은 슬롯으로 본다.
+///
+/// 슬롯 T의 수집분은 대개 ts ∈ (T-1h, T]에 찍히지만(localTradedAt이 수집 시각보다 이르다),
+/// 09:00 개장 틱만은 예외로 T보다 몇 초~수십 초 *늦게* 찍힌다. 네이버가 개장 시각을
+/// 그 시점에 새로 스탬프하기 때문. 그냥 올림하면 이 틱이 10:00 슬롯으로 밀려서
+/// 09:00은 결측으로, 10:00은 이중으로 잡힌다.
+const SLOT_GRACE: i64 = 120;
+
+/// ts가 속한 수집 슬롯 (KST 정각).
+pub fn slot_of(ts: i64) -> i64 {
+    (ts - SLOT_GRACE + 3599) / 3600 * 3600
+}
+
 /// [from, to] 구간에서 수집됐어야 하는데 빠진 정각 슬롯들.
-/// 슬롯 T의 수집분은 ts ∈ (T-1h, T]에 찍힌다 (네이버 localTradedAt이 수집 시각보다 약간 이르므로).
 pub fn missing_slots(symbol: &str, rows: &[Row], from: i64, to: i64) -> Vec<i64> {
     let filled: std::collections::HashSet<i64> = rows
         .iter()
         .filter(|r| r.symbol == symbol)
-        .map(|r| (r.ts + 3599) / 3600 * 3600) // ts가 속한 슬롯 T = 올림 정각
+        .map(|r| slot_of(r.ts))
         .collect();
     let mut t = (from + 3599) / 3600 * 3600;
     let mut missing = Vec::new();
@@ -159,4 +171,68 @@ pub fn missing_slots(symbol: &str, rows: &[Row], from: i64, to: i64) -> Vec<i64>
         t += 3600;
     }
     missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// KST "YYYY-MM-DD HH:MM:SS" → epoch초
+    fn kts(s: &str) -> i64 {
+        let n = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        kst().from_local_datetime(&n).single().unwrap().timestamp()
+    }
+
+    #[test]
+    fn open_tick_stays_in_0900_slot() {
+        // 실측: 개장 틱은 09:00 정각보다 몇 초~수십 초 늦게 찍힌다.
+        for t in ["09:00:00", "09:00:05", "09:00:11", "09:00:28", "09:01:59"] {
+            let ts = kts(&format!("2026-08-04 {t}"));
+            assert_eq!(
+                slot_of(ts),
+                kts("2026-08-04 09:00:00"),
+                "{t} 는 09:00 슬롯이어야 한다"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_tick_rounds_up_to_next_slot() {
+        // 나머지 시각대는 localTradedAt이 수집 시각보다 이르다 → 올림.
+        assert_eq!(slot_of(kts("2026-08-04 09:59:03")), kts("2026-08-04 10:00:00"));
+        assert_eq!(slot_of(kts("2026-08-04 14:58:00")), kts("2026-08-04 15:00:00"));
+        assert_eq!(slot_of(kts("2026-08-04 12:00:00")), kts("2026-08-04 12:00:00"));
+        // USDKRW 한산한 시간대는 한참 뒤처진 ts가 온다 (05:28 → 06:00 수집분).
+        assert_eq!(slot_of(kts("2026-07-22 05:28:12")), kts("2026-07-22 06:00:00"));
+    }
+
+    #[test]
+    fn open_tick_does_not_collide_with_1000_slot() {
+        // 회귀 방지: 09:00:11 틱이 10:00 슬롯으로 밀리면
+        // 09:00은 결측, 10:00은 이중으로 잡혔다.
+        let open = kts("2026-08-04 09:00:11");
+        let ten = kts("2026-08-04 09:59:03");
+        assert_ne!(slot_of(open), slot_of(ten));
+    }
+
+    #[test]
+    fn missing_slots_reports_nothing_for_a_full_trading_day() {
+        let day = "2026-08-04";
+        // 09:00 개장 틱 + 10:00~16:00 수집분(각 1분 이르게)
+        let mut rows = vec![Row {
+            symbol: "KOSPI".into(),
+            ts: kts(&format!("{day} 09:00:11")),
+            value: 1.0,
+        }];
+        for h in 9..16 {
+            rows.push(Row {
+                symbol: "KOSPI".into(),
+                ts: kts(&format!("{day} {h:02}:59:03")),
+                value: 1.0,
+            });
+        }
+        let from = kts(&format!("{day} 00:00:00"));
+        let to = kts(&format!("{day} 23:59:59"));
+        assert_eq!(missing_slots("KOSPI", &rows, from, to), Vec::<i64>::new());
+    }
 }

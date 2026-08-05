@@ -29,6 +29,22 @@ async function handleQuotes(url: URL, env: Env): Promise<Response> {
   return Response.json(results);
 }
 
+// GET /collect-log?from=<epoch초>&to=<epoch초>
+async function handleCollectLog(url: URL, env: Env): Promise<Response> {
+  const from = Number(url.searchParams.get("from") ?? 0);
+  const to = Number(url.searchParams.get("to") ?? Number.MAX_SAFE_INTEGER);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    return new Response("bad range", { status: 400 });
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT run_ts, symbol, outcome FROM collect_log
+     WHERE run_ts >= ?1 AND run_ts <= ?2 ORDER BY run_ts`,
+  )
+    .bind(from, to)
+    .all();
+  return Response.json(results);
+}
+
 export async function handleRequest(req: Request, env: Env): Promise<Response> {
   if (!authorized(req, env)) return NOT_FOUND();
 
@@ -36,6 +52,10 @@ export async function handleRequest(req: Request, env: Env): Promise<Response> {
 
   if (req.method === "GET" && url.pathname === "/quotes") {
     return handleQuotes(url, env);
+  }
+
+  if (req.method === "GET" && url.pathname === "/collect-log") {
+    return handleCollectLog(url, env);
   }
 
   // 수동 수집 트리거 (네이버 장애 복구 후 즉시 재수집 등 운영용)
