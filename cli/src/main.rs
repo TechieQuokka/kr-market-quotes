@@ -72,7 +72,7 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// 수집 상태 점검 (최종 수집 시각 + 최근 7일 빈 슬롯)
+    /// 수집 상태 점검 (최종 수집 실행 시각 + 최근 7일 실패/설명 안 되는 빈 슬롯)
     Status,
     /// 로컬 캐시 관리
     Cache {
@@ -114,9 +114,11 @@ const DETAIL_HELP: &str = concat!(
 
 ■ status — 수집 상태 점검 (이상 시 exit code 1)
     $ kmq status
-    → 심볼별 최종 수집 시각 + 최근 7일 빈 슬롯 수.
+    → 심볼별 last run(마지막 정상 수집 실행) · last quote(값이 마지막으로 바뀐 시각)
+      + unexplained(수집 로그로 설명 안 되는 빈 슬롯) · failed(7일간 실패 횟수).
       ⚠ 가 뜨면 네이버 API 변경/장애 의심. worker 로그(wrangler tail) 확인.
-      공휴일이나 값 미변동(중복 제거)도 빈 슬롯으로 집계될 수 있음.
+      공휴일·값 미변동은 수집 로그가 설명해 주므로 unexplained에 잡히지 않음.
+      last quote가 오래된 것은 정상 — 값이 그대로면 행을 쓰지 않기 때문.
 
 ■ cache — 로컬 캐시 관리 (~/.cache/kmq/cache.db)
     $ kmq cache info                                          # 심볼별 저장 현황
