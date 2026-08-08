@@ -38,14 +38,11 @@ pub fn run() -> Result<()> {
             .map(|l| l.run_ts)
             .max();
 
-        // 지금이 수집 시간대인데 2시간 넘게 정상 수집이 없으면 경고
+        // 지금이 수집 시간대인데 한동안 정상 수집이 없으면 경고
         let in_window = compute::expected(sym, now / 3600 * 3600);
-        let too_old = |t: i64| in_window && (now - t) as f64 / 3600.0 > 2.0;
-        let (run_s, stale) = match last_run {
-            Some(t) => (fmt_age(t, now), too_old(t)),
-            // 로그가 없으면(구버전 worker · 배포 직후) 예전처럼 quotes로 판정할 수밖에 없다.
-            None => ("-".to_string(), last_ts.is_none_or(too_old)),
-        };
+        let stale = compute::is_stale(last_run, last_ts, in_window, now);
+        // 로그가 없으면(구버전 worker · 배포 직후) 표시할 실행 시각도 없다.
+        let run_s = last_run.map_or_else(|| "-".to_string(), |t| fmt_age(t, now));
         let quote_s = match last_ts {
             Some(t) => fmt_age(t, now),
             None => "no data (7d)".to_string(),

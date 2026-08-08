@@ -155,6 +155,22 @@ pub fn slot_of(ts: i64) -> i64 {
     (ts - SLOT_GRACE + 3599) / 3600 * 3600
 }
 
+/// 수집이 멈춘 것으로 볼 시간 (수집 시간대 안에서만 적용).
+const STALE_HOURS: f64 = 2.0;
+
+/// 수집이 멈췄는가.
+///
+/// 기준은 `last_run`(collect_log의 마지막 non-failed 실행)이지 `last_ts`(quotes의 마지막 행)가
+/// 아니다. 값이 직전과 같으면 행을 쓰지 않으므로 행이 오래된 것과 수집이 멈춘 것은 다른
+/// 사건이다. `last_run`이 없는 경우(구버전 worker · 로그 도입 전)만 quotes로 폴백한다.
+pub fn is_stale(last_run: Option<i64>, last_ts: Option<i64>, in_window: bool, now: i64) -> bool {
+    let too_old = |t: i64| in_window && (now - t) as f64 / 3600.0 > STALE_HOURS;
+    match last_run {
+        Some(t) => too_old(t),
+        None => last_ts.is_none_or(too_old),
+    }
+}
+
 /// [from, to] 구간에서 수집됐어야 하는데 빠진 정각 슬롯들.
 pub fn missing_slots(symbol: &str, rows: &[Row], from: i64, to: i64) -> Vec<i64> {
     let filled: std::collections::HashSet<i64> = rows
@@ -213,6 +229,54 @@ mod tests {
         let open = kts("2026-08-04 09:00:11");
         let ten = kts("2026-08-04 09:59:03");
         assert_ne!(slot_of(open), slot_of(ten));
+    }
+
+    // ── 신선도 판정 ──────────────────────────────────────────────
+    // 핵심은 두 방향을 다 지키는 것이다: 값이 안 변해도 경보가 울리면 안 되고(오탐),
+    // 수집이 실제로 멈추면 반드시 울려야 한다(미탐). 후자가 이 명령의 존재 이유다.
+
+    #[test]
+    fn unchanged_value_during_session_is_not_stale() {
+        // USDKRW 새벽 한산 시간대 · 개장 09시대: 수집은 매시 돌지만 값이 그대로라
+        // quotes에는 행이 안 쌓인다. 이걸 경보로 잡던 것이 제거한 오탐이다.
+        let now = kts("2026-08-06 14:00:00");
+        let last_run = Some(kts("2026-08-06 14:00:02"));
+        let last_ts = Some(kts("2026-08-06 04:59:00")); // 9시간 전 행
+        assert!(!is_stale(last_run, last_ts, true, now));
+    }
+
+    #[test]
+    fn collection_stopped_during_session_is_stale() {
+        // 미탐 방지 — 수집이 실제로 멈춘 경우. 2026-08-07 실제 장애를 옮긴 것:
+        // 크론이 08-07 02:00~18:00 KST 동안 안 돌아 금요일 장 전체가 비었다.
+        let now = kts("2026-08-07 14:00:00");
+        let last_run = Some(kts("2026-08-06 16:00:02")); // 22시간 전
+        let last_ts = Some(kts("2026-08-06 15:59:00"));
+        assert!(is_stale(last_run, last_ts, true, now));
+    }
+
+    #[test]
+    fn all_runs_failed_is_stale() {
+        // 전부 실패하면 non-failed 실행이 없어 last_run 자체가 안 잡힌다.
+        // quotes도 안 쌓이므로 폴백 경로에서 걸려야 한다.
+        let now = kts("2026-08-07 14:00:00");
+        assert!(is_stale(None, Some(kts("2026-08-06 15:59:00")), true, now));
+        assert!(is_stale(None, None, true, now)); // 7일 내 데이터 자체가 없음
+    }
+
+    #[test]
+    fn legacy_worker_falls_back_to_quotes() {
+        // 구버전 worker (collect-log 없음) → quotes 기준 예전 판정 유지.
+        let now = kts("2026-08-06 14:00:00");
+        assert!(!is_stale(None, Some(kts("2026-08-06 13:59:00")), true, now));
+        assert!(is_stale(None, Some(kts("2026-08-06 10:00:00")), true, now));
+    }
+
+    #[test]
+    fn outside_collection_window_is_never_stale() {
+        // 주말·장 마감 후에는 아무리 오래돼도 경보가 아니다.
+        let now = kts("2026-08-08 16:00:00"); // 토요일
+        assert!(!is_stale(Some(kts("2026-08-06 16:00:02")), None, false, now));
     }
 
     #[test]
